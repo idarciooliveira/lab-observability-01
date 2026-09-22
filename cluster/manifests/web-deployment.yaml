@@ -20,9 +20,4 @@ spec:
           image: insurance-web:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 5173
-          env:
-            - name: VITE_INSURANCE_API_URL
-              value: "http://api-service:3000"
-            - name: CORS_ALLOWED_ORIGINS
-              value: "http://localhost:5173,http://localhost:8080"
+            - containerPort: 80

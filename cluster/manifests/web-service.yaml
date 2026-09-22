@@ -6,5 +6,5 @@ spec:
   selector:
     app: insurance-web
   ports:
-    - port: 5173
-      targetPort: 5173
+    - port: 80
+      targetPort: 80
