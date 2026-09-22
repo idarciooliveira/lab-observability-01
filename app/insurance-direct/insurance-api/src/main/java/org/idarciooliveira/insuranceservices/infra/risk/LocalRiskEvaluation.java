@@ -34,11 +34,27 @@ public class LocalRiskEvaluation implements RiskEvaluation {
             @Value("${CHAOS_LATENCY_MS:0}") long chaosLatencyMs,
             @Value("${CHAOS_REJECT_RATE:0}") double chaosRejectRate) {
         this.metrics = metrics;
-        this.chaosLatencyMs = chaosLatencyMs;
-        this.chaosRejectRate = chaosRejectRate;
-        if (chaosLatencyMs > 0 || chaosRejectRate > 0) {
-            log.warn("chaos enabled latency_ms={} reject_rate={}", chaosLatencyMs, chaosRejectRate);
+        this.chaosLatencyMs = Math.max(0, chaosLatencyMs);
+        this.chaosRejectRate = normalizeRejectRate(chaosRejectRate);
+        if (chaosLatencyMs > 0 || this.chaosRejectRate > 0) {
+            log.warn("chaos enabled latency_ms={} reject_rate={}", chaosLatencyMs, this.chaosRejectRate);
         }
+    }
+
+    /**
+     * Accepts a 0.0-1.0 fraction. Values above 1 (e.g. {@code 10} meaning
+     * "10%") are interpreted as a percentage to avoid a 100%-reject footgun:
+     * {@code 10 -> 0.10}. Values are clamped to [0, 1].
+     */
+    static double normalizeRejectRate(double raw) {
+        double rate = raw;
+        if (rate > 1) {
+            rate = rate / 100.0;
+        }
+        if (rate < 0) {
+            return 0;
+        }
+        return Math.min(rate, 1.0);
     }
 
     @WithSpan("risk.check")

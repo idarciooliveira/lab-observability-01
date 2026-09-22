@@ -37,6 +37,21 @@ services:
       OTEL_INSTRUMENTATION_MICROMETER_ENABLED: "true"
       CHAOS_LATENCY_MS: ${CHAOS_LATENCY_MS:-0}
       CHAOS_REJECT_RATE: ${CHAOS_REJECT_RATE:-0}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8080}
+
+  insurance-web:
+    build:
+      context: ./insurance-web
+      dockerfile: Dockerfile
+      args:
+        VITE_INSURANCE_API_URL: ${VITE_INSURANCE_API_URL:-http://localhost:8083}
+    container_name: insurance-web
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    depends_on:
+      - insurance-api
+    networks:
+      - insurance-direct
 
   postgres:
     image: postgres:16-alpine
