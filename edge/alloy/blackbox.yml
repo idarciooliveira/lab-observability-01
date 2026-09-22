@@ -1,0 +1,14 @@
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      valid_status_codes: [200, 201, 204]
+  http_2xx_4xx:
+    # For the controlled-failure endpoint: any HTTP answer counts as "up",
+    # error-rate alerting happens in Grafana on the app metrics/traces.
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4

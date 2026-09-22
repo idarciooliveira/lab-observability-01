@@ -1,0 +1,3 @@
+# Local edge state — never commit.
+.env
+data/

@@ -1,0 +1,212 @@
+// Edge collector for lab-observability.
+// Covers docs/architecture.md §2: OTLP 4317/4318, scrape, docker logs,
+// PII masking, tenant+env, batch, disk queue, OTLP/HTTP HTTPS export.
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// ── 1. OTLP receivers (app -> Alloy, trusted edge network, no auth) ──
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.attributes.edge.input]
+    logs    = [otelcol.processor.attributes.edge.input]
+    traces  = [otelcol.processor.attributes.edge.input]
+  }
+}
+
+// ── 2. Scrape: Alloy self, Blackbox, Java actuator ──
+// Java Prometheus endpoint: Spring Boot Actuator (spring-boot-starter-actuator).
+// When the API runs in docker-compose it is reachable as insurance-api:8080
+// on the shared network; when it runs in k3d it is reachable from the host
+// as host.docker.internal:<INSURANCE_API_PORT>. Both targets are listed —
+// a down target just shows as `up=0`, it does not break the pipeline.
+prometheus.scrape "alloy" {
+  targets = [{
+    __address__ = "localhost:12345",
+    job         = "alloy",
+  }]
+  forward_to = [prometheus.remote_write.core.receiver]
+}
+
+prometheus.scrape "blackbox" {
+  targets = [{
+    __address__ = "blackbox:9115",
+    job         = "blackbox-exporter",
+  }]
+  forward_to = [prometheus.remote_write.core.receiver]
+}
+
+prometheus.scrape "api" {
+  scrape_interval = "15s"
+  targets = [
+    { __address__ = "insurance-api:8080", __metrics_path__ = "/actuator/prometheus", job = "insurance-api" },
+    { __address__ = "host.docker.internal:8083", __metrics_path__ = "/actuator/prometheus", job = "insurance-api-host" },
+  ]
+  forward_to = [prometheus.remote_write.core.receiver]
+}
+
+// ── 3. Docker logs tailing ──
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+loki.source.docker "default" {
+  host    = "unix:///var/run/docker.sock"
+  targets = discovery.docker.containers.targets
+  forward_to = [loki.process.edge.receiver]
+}
+
+loki.process "edge" {
+  // Attach tenant/env to every log stream so Loki multi-tenancy
+  // (X-Scope-OrgID, docs/architecture.md §6) can be derived downstream.
+  stage.static_labels {
+    values = {
+      tenant_id = env("TENANT_ID"),
+      env       = env("ENV"),
+    }
+  }
+
+  // PII masking: e-mail addresses in log lines.
+  stage.replace {
+    expression = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+    replace    = "[REDACTED_EMAIL]"
+  }
+
+  forward_to = [loki.write.core.receiver]
+}
+
+// ── 4. Processors: tenant+env, PII masking, batch ──
+otelcol.processor.attributes "edge" {
+  action {
+    key    = "tenant.id"
+    value  = env("TENANT_ID")
+    action = "insert"
+  }
+
+  action {
+    key    = "deployment.environment"
+    value  = env("ENV")
+    action = "upsert"
+  }
+
+  output {
+    metrics = [otelcol.processor.transform.pii.input]
+    logs    = [otelcol.processor.transform.pii.input]
+    traces  = [otelcol.processor.transform.pii.input]
+  }
+}
+
+otelcol.processor.transform "pii" {
+  trace_statements {
+    context = "resource"
+    statements = [
+      `replace_pattern(attributes["user.email"], "(?s).*", "[REDACTED]") where attributes["user.email"] != nil`,
+      `replace_pattern(attributes["enduser.id"], "(?s).*", "[REDACTED]") where attributes["enduser.id"] != nil`,
+    ]
+  }
+
+  log_statements {
+    context = "log"
+    statements = [
+      `replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")`,
+    ]
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  send_batch_size = 512
+  timeout         = "10s"
+
+  output {
+    metrics = [otelcol.exporter.otlphttp.core.input]
+    logs    = [otelcol.exporter.otlphttp.core.input]
+    traces  = [otelcol.exporter.otlphttp.core.input]
+  }
+}
+
+// ── 5+6. Export to core gateway over HTTPS with disk-backed queue ──
+// The gateway resolves `Authorization: Bearer <OTEL_TOKEN>` -> tenant and
+// injects `X-Scope-OrgID` (docs/architecture.md §7, ADR-007). The app must
+// NOT set tenant headers itself; only Alloy adds `tenant.id` as a resource
+// attribute and the gateway owns the authoritative mapping.
+// `retry_on_failure` + `sending_queue` lets the edge keep receiving during a
+// temporary core outage (docs/architecture.md §2). WAL lives in
+// /var/lib/alloy (docker volume `alloy-data`).
+otelcol.exporter.otlphttp "core" {
+  client {
+    endpoint = env("CORE_GATEWAY_ENDPOINT")
+    headers = {
+      Authorization = "Bearer " + env("OTEL_TOKEN"),
+    }
+    tls {
+      // Dev only: core uses cert-manager self-signed or mkcert
+      // (docs/architecture.md §7). Set to false once the CA is trusted.
+      insecure_skip_verify = env("GATEWAY_TLS_INSECURE_SKIP_VERIFY") == "true"
+    }
+    // Gateway serves OTLP/HTTP only — never gRPC (see app docker-compose).
+    compression = "gzip"
+  }
+
+  retry_on_failure {
+    enabled              = true
+    initial_interval     = "5s"
+    max_interval         = "30s"
+    max_elapsed_time     = "0s" // retry indefinitely, queue absorbs the outage
+  }
+
+  sending_queue {
+    enabled      = true
+    num_consumers = 10
+    queue_size   = 5000
+  }
+}
+
+// Metrics remote-write path (WAL on disk via --storage.path).
+prometheus.remote_write "core" {
+  endpoint {
+    url = env("CORE_PROM_ENDPOINT")
+    headers = {
+      Authorization = "Bearer " + env("OTEL_TOKEN"),
+    }
+    tls_config {
+      // Same dev-TLS note as above.
+      insecure_skip_verify = env("GATEWAY_TLS_INSECURE_SKIP_VERIFY") == "true"
+    }
+    queue_config {
+      capacity           = 5000
+      max_shards         = 10
+      min_shards         = 1
+      max_samples_per_send = 500
+    }
+  }
+}
+
+// Logs push path.
+loki.write "core" {
+  endpoint {
+    url = env("CORE_LOKI_ENDPOINT")
+    headers = {
+      Authorization = "Bearer " + env("OTEL_TOKEN"),
+    }
+    tls_config {
+      insecure_skip_verify = env("GATEWAY_TLS_INSECURE_SKIP_VERIFY") == "true"
+    }
+  }
+}
