@@ -7,13 +7,22 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "load:smoke": "LOAD_DURATION_S=30 LOAD_WORKERS=2 playwright test --project=browser",
+    "load:smoke:api": "LOAD_DURATION_S=30 LOAD_WORKERS=2 playwright test --project=api",
+    "load:soak": "LOAD_DURATION_S=600 LOAD_WORKERS=4 playwright test",
+    "load:soak:browser": "LOAD_DURATION_S=600 LOAD_WORKERS=4 playwright test --project=browser",
+    "load:soak:api": "LOAD_DURATION_S=600 LOAD_WORKERS=8 playwright test --project=api",
+    "load:spike": "LOAD_DURATION_S=120 LOAD_WORKERS=8 LOAD_THINK_MIN_MS=0 LOAD_THINK_MAX_MS=10 playwright test --project=api",
+    "load:headed": "LOAD_HEADED=1 LOAD_SLOWMO_MS=250 LOAD_DURATION_S=300 LOAD_WORKERS=1 LOAD_THINK_MIN_MS=200 LOAD_THINK_MAX_MS=800 playwright test --project=browser",
+    "load:ui": "playwright test --ui --project=browser"
   },
   "dependencies": {
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
