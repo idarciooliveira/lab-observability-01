@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: insurance-web-service
+spec:
+  selector:
+    app: insurance-web
+  ports:
+    - port: 5173
+      targetPort: 5173
