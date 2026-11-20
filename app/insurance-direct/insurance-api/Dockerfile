@@ -21,8 +21,8 @@ ARG OTEL_VERSION=2.31.1
 RUN wget -q -O /opentelemetry-javaagent.jar \
     https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v${OTEL_VERSION}/opentelemetry-javaagent.jar
 
-# Runtime stage
-FROM eclipse-temurin:21-jre-alpine
+# Runtime stage (Corretto 21.0.13.1+ fixes CVE-2026-114938)
+FROM amazoncorretto:21-alpine
 RUN addgroup -S app && adduser -S app -G app
 USER app
 WORKDIR /app
